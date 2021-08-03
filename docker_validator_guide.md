@@ -307,7 +307,7 @@ COMING SOON
 ## Failover
 COMING SOON
 
-## Monitoring
+# Monitoring
 I do not use the monitoring solution which is built into the CLI. The CLI monitoring solution is explained at https://docs.radixdlt.com/main/node/install-grafana-dashboard.html
 
 There is nothing wrong with this option, however my preference is not to run a webserver on the same server as my node. If this option is one you want to explore, just bear in mind you will also need to open port 3000 on both UFW and your hosting provider customisable firewall.
@@ -324,7 +324,7 @@ The Grafana Agent is basically a stripped down Promotheus which is directly writ
 (Grafana Agent behaves like having a built-in Promotheus). 
 You should now have a working monitoring of your system load pushed to Grafana Cloud.
 
-However it won't be pushing your node data to Grafana Cloud by default. 
+However it won't be pushing your node data to Grafana Cloud by default so let's fix that
 
 ## Extending Grafana Agent Config
 Add the `scrape_configs` configuration to `etc/grafana-agent.yaml`: 
@@ -426,50 +426,6 @@ the following line:
 For further details:
 - https://linuxconfig.org/how-to-restrict-users-access-on-a-linux-machine
 
-# Logs & Status
+# Useful commands
 
-Shows radix node logs with colours:
-```
-sudo journalctl -f -u radixdlt-node --output=cat
-```
-
-Shows node health (`BOOTING`, `SYNCING`, `UP`, `STALLED`, `OUT_OF_SYNC`)
-```
-curl -s localhost:3333/health | jq
-```
-
-Show account information:
-```
-curl -s -d '{ "jsonrpc": "2.0", "method": "account.get_info", "params": [], "id":1}' -H "Content-Type: application/json" -X POST "http://localhost:3333/account" | jq
-```
-
-Show node information:
-```
-curl -s -d '{"jsonrpc": "2.0", "method": "validation.get_node_info", "params": [], "id": 1}' -H "Content-Type: application/json" -X POST "http://localhost:3333/validation" | jq
-```
-
-Shows `targetStateVersion` (versions are kind of Radix's blocks in Olympia - how many blocks are synced):
-```
-curl -s -X POST 'http://localhost:3333/system' -d '{"jsonrpc": "2.0", "method": "sync.get_data", "params": [], "id": 1}' | jq ".result.targetStateVersion"
-```
-
-Shows the difference sync difference to the network.
-Should be `0` if the node is fully synced (if `targetCurrentDiff` isn't `0`)
-```
-curl -s -X POST 'http://localhost:3333/system' -d '{"jsonrpc": "2.0", "method": "sync.get_data", "params": [], "id": 1}' | jq
-```
-
-Shows current validator information:
-```
-curl -s -d '{"jsonrpc": "2.0", "method": "validation.get_node_info", "params": [], "id": 1}' -H "Content-Type: application/json" -X POST "http://localhost:3333/validation" | jq
-```
-
-Get network peers:
-```
-curl -s -d '{"jsonrpc": "2.0", "method": "networking.get_peers", "params": [], "id": 1}' -H "Content-Type: application/json" -X POST "http://localhost:3333/system" | jq
-```
-
-Get network configuration:
-```
-curl -s -d '{"jsonrpc": "2.0", "method": "networking.get_configuration", "params": [], "id": 1}' -H "Content-Type: application/json" -X POST "http://localhost:3333/system" | jq
-```
+COMING SOON
