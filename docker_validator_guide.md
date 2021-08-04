@@ -1,4 +1,4 @@
-# Production-grade Docker Validator Guide
+# Tednol's Docker Validator Guide
 
 This guide presents a straightforward and focused guide to set up a production grade validator node on Radix using Docker.
 It won't discuss all possible ways to set up a Docker node. It is intended to document my approach. The guide is tested and based on Ubuntu 20.04.
@@ -7,7 +7,7 @@ This is work in progress and some parts may change with the upcoming node releas
 
 This document draws heavily (and with kind permission) from the excellent resource Florian produced for standalone installs. https://github.com/fpieper/fpstaking/blob/main/docs/validator_guide.md
 
-It does not match capabilities 1:1 with Florian's implementation.
+It does not match capabilities 1:1 with Florian's implementation especially with regards to failover. My failover approach has been tested repeatedly, but when it comes to failover time is of the essence and I suggest you practice my approach on Stokenet before seeking to deploy on mainnet. All the steps below apply to either mainnet or Stokenet, I'll be sure to highlight where there are differences to consider.
 
 # Basic Setup
 
@@ -35,7 +35,7 @@ sudo passwd -l root
 
 ## Hostname
 
-You may want to set a different hostname to make distinguishing between your different nodes easier e.g.:
+You may want to set a different hostname to make distinguishing between your different nodes easier e.g. mainnet-1, mainnet-2, stokenet-1, e.g.
 ```
 sudo hostnamectl set-hostname mainnet-1
 ```
@@ -119,14 +119,10 @@ sudo ufw enable
 sudo ufw status
 ```
 
-Be careful and verify whether you can successfully open a new SSH connection before
-closing your existing session. Now after you ensured you didn't lock yourself out of your
+Be careful and verify whether you can successfully open a new SSH connection before closing your existing session. Now after you ensured you didn't lock yourself out of your
 server we can continue with setting up the Radix node itself.
 
-Secondly, given Docker does not always abide by UFW rules, you will need to ensure your chosen hosting provider offers you a customisable firewall.
-Config will vary across different cloud providers.
-You will need to open the same tcp ports as you have opened on UFW. Config appropriately using support resources from your hosting provider if required.
-From personal experience, setup is very self-explanatory across DigitalOcean, Linode and Vultr.
+Secondly, given Docker does not always abide by UFW rules, you will need to ensure your chosen hosting provider offers you a customisable firewall. Config will vary across different cloud providers. You will need to open the same tcp ports as you have opened on UFW. Config appropriately using support resources from your hosting provider if required. From personal experience, setup is very self-explanatory across DigitalOcean, Linode and Vultr. It is outside the scope of this guide to provide instructions for your particular hosting provider.
 
 ## Update System
 Update package repository and update system:
@@ -156,11 +152,8 @@ https://linoxide.com/enable-automatic-updates-on-ubuntu-20-04/.
 
 
 ## Kernel live patching
-We will use `canonical-livepatch` for kernel live patching.
-First we need to check whether you are running the `linux-generic` kernel
-(or any of these `generic, lowlatency, aws, azure, oem, gcp, gke, gkeop`
-https://wiki.ubuntu.com/Kernel/Livepatch - then you can skip installing a different kernel
-and move to enabling `livepatch` directly).
+Kernel live patching is excellent because it means fewer restarts. We will use `canonical-livepatch` for kernel live patching.
+First we need to check whether you are running the `linux-generic` kernel (or any of these `generic, lowlatency, aws, azure, oem, gcp, gke, gkeop, https://wiki.ubuntu.com/Kernel/Livepatch - then you can skip installing a different kernel and move to enabling `livepatch` directly).
 ```
 uname -a
 ```
@@ -231,6 +224,7 @@ Move the file location so it is accessible from any other directory:
 sudo mv radixnode /usr/local/bin
 ```
 
+
 ## Install Docker and the node
 This is easy with the help of the CLI
 
@@ -245,11 +239,10 @@ But first you need to pick a seed. Choose one near to the location of your node 
 ```
 radixnode docker setup -n fullnode -t <ADDRESS & IP OF CHOSEN SEED>
 ```
-You will need to confirm a few times, answer Y to proceed. At the end, exit out of your SSH connection and connect back in
 
 
 ## Set passwords
-Now it is time to set three passwords for the Nginx server. My suggestion is to choose 32 character passwords without symbols.
+Now it is time to set three passwords for the Nginx server. My suggestion is to choose 32 character passwords without symbols, and obviously they should be different for each password.
 
 First up is the admin user and password for access to the Nginx server that was automatically installed in the previous step.
 ```
@@ -314,15 +307,11 @@ There is nothing wrong with this option, however my preference is not to run a w
 
 If the CLI method works for you then stop here. Otherwise continue to read about how to integrate with Grafana Cloud.
 
-I can recommend watching this comprehensive introduction to Grafana Cloud
-https://grafana.com/go/webinar/intro-to-prometheus-and-grafana/.
-First, sign up for a Grafana Cloud free account and follow their quickstart introductions to install
-Grafana Agent on your node (via the automatic setup script). This basic setup is out of the scope of this guide.
-You can find the quickstart introductions to install the Grafana Agent under
-`Onboarding (lightning icon) / Walkthrough / Linux Server` and click on `Next: Configure Service`.
-The Grafana Agent is basically a stripped down Promotheus which is directly writing to Grafana Cloud instead of storing metrics locally
-(Grafana Agent behaves like having a built-in Promotheus). 
-You should now have a working monitoring of your system load pushed to Grafana Cloud.
+I can recommend watching this comprehensive introduction to Grafana Cloud https://grafana.com/go/webinar/intro-to-prometheus-and-grafana/.
+
+First, sign up for a Grafana Cloud free account and follow their quickstart introductions to install Grafana Agent on your node (via the automatic setup script). This basic setup is out of the scope of this guide. You can find the quickstart introductions to install the Grafana Agent under `Onboarding (lightning icon) / Walkthrough / Linux Server` and click on `Next: Configure Service`.
+
+The Grafana Agent is basically a stripped down Promotheus which is directly writing to Grafana Cloud instead of storing metrics locally (Grafana Agent behaves like having a built-in Promotheus). You should now have a working monitoring of your system load pushed to Grafana Cloud.
 
 However it won't be pushing your node data to Grafana Cloud by default so let's fix that
 
@@ -383,11 +372,9 @@ Afterwards you can select `Spike.sh` in your alert configurations.
 ### Grafana Alerts
 You can find the alerts by clicking on the panel title / Edit / Alert.
 
-I set an alert on the proposals made panel, which fires an alert if no proposal was made in the last 2 minutes.
-However, this needs a bit tuning for real world condition (worked fine in betanet conditions).
+I set an alert on the proposals made panel, which fires an alert if no proposal was made in the last 2 minutes. However, this needs a bit tuning for real world condition (worked fine in betanet conditions).
 
-You also need to set `Notifications` to `Spike.sh` (if you configured the `Notification Channel` above).
-Or any other notification channel if you prefer `PagerDuty` or `Telegram`.
+You also need to set `Notifications` to `Spike.sh` (if you configured the `Notification Channel` above). Or any other notification channel if you prefer `PagerDuty` or `Telegram`.
 
 # More Hardening
 ## SSH
