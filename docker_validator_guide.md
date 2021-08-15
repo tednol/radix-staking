@@ -80,6 +80,7 @@ Modify or add the following settings to `/etc/ssh/sshd_config`.
 ```
 sudo nano /etc/ssh/sshd_config
 ```
+Make these changes. The first three will already be in the config file, just remove the # at the start of the line (if there is one) and change the text. Add the final line to the bottom of the doc
 ```
 Port 1234
 PasswordAuthentication no
@@ -105,24 +106,109 @@ sudo ufw default deny incoming
 sudo ufw default allow outgoing
 ```
 
-Second, we will only allow the custom SSH port and Radix network gossip on port 30000/tcp.
+Second, we will only open the Radix network gossip on port 30000/tcp.
 ```
-sudo ufw allow 1234/tcp
 sudo ufw allow 30000/tcp
 ```
+I strongly suggest you do not open your SSH port to all IP addresses. My own set up involves having a simple, secure, low cost admin server with a fixed IP that I can access from anywhere. I never SSH directly into the nodes, instead using a multi-hop connection via my admin server. My admin server serves only two purposes - it is a place on which to store my keystore files as backups, and accepts SSH connections from any IP address and is used for multi-hops into my actual nodes.
 
+If you follow my advice, to open the SSH port only to a fixed IP, use replacing x.x.x.x with your fixed IP
+```
+sudo ufw allow from x.x.x.x to any port 1234
+```
+If you want to ignore my advice and open your SSH port from anywhere, instead run
+```
+sudo ufw allow 1234/tcp
+```
 You'll also need port 8080 open if you are planning on operation an archive node but that is outside scope of this guide.
 
+Let's modify `/etc/ufw/before.rules` to stop the server responding to random ping requests to reduce the DDoS attack vectors
+```
+sudo nano /etc/ufw/before.rules
+```
+In this file, change the bit ~34 rows down from
+```
+# ok icmp codes for INPUT
+-A ufw-before-input -p icmp --icmp-type destination-unreachable -j ACCEPT
+-A ufw-before-input -p icmp --icmp-type source-quench -j ACCEPT
+-A ufw-before-input -p icmp --icmp-type time-exceeded -j ACCEPT
+-A ufw-before-input -p icmp --icmp-type parameter-problem -j ACCEPT
+-A ufw-before-input -p icmp --icmp-type echo-request -j ACCEPT
+```
+to
+```
+# ok icmp codes for INPUT
+-A ufw-before-input -p icmp --icmp-type destination-unreachable -j DROP
+-A ufw-before-input -p icmp --icmp-type source-quench -j DROP
+-A ufw-before-input -p icmp --icmp-type time-exceeded -j DROP
+-A ufw-before-input -p icmp --icmp-type parameter-problem -j DROP
+-A ufw-before-input -p icmp --icmp-type echo-request -j DROP
+```
+Next firewall thing to change, given we are doing a Docker install and Docker by default ignores the rules set in UFW, requires a change to the `/etc/ufw/after.rules` file
+
+```
+sudo nano /etc/ufw/after.rules
+```
+At the bottom of this file, add the following lines
+```
+# BEGIN UFW AND DOCKER
+*filter
+:ufw-user-forward - [0:0]
+:ufw-docker-logging-deny - [0:0]
+:DOCKER-USER - [0:0]
+-A DOCKER-USER -j ufw-user-forward
+
+-A DOCKER-USER -j RETURN -s 10.0.0.0/8
+-A DOCKER-USER -j RETURN -s 172.16.0.0/12
+-A DOCKER-USER -j RETURN -s 192.168.0.0/16
+
+-A DOCKER-USER -p udp -m udp --sport 53 --dport 1024:65535 -j RETURN
+
+-A DOCKER-USER -j ufw-docker-logging-deny -p tcp -m tcp --tcp-flags FIN,SYN,RST,ACK SYN -d 192.168.0.0/16
+-A DOCKER-USER -j ufw-docker-logging-deny -p tcp -m tcp --tcp-flags FIN,SYN,RST,ACK SYN -d 10.0.0.0/8
+-A DOCKER-USER -j ufw-docker-logging-deny -p tcp -m tcp --tcp-flags FIN,SYN,RST,ACK SYN -d 172.16.0.0/12
+-A DOCKER-USER -j ufw-docker-logging-deny -p udp -m udp --dport 0:32767 -d 192.168.0.0/16
+-A DOCKER-USER -j ufw-docker-logging-deny -p udp -m udp --dport 0:32767 -d 10.0.0.0/8
+-A DOCKER-USER -j ufw-docker-logging-deny -p udp -m udp --dport 0:32767 -d 172.16.0.0/12
+
+-A DOCKER-USER -j RETURN
+
+-A ufw-docker-logging-deny -m limit --limit 3/min --limit-burst 10 -j LOG --log-prefix "[UFW DOCKER BLOCK] "
+-A ufw-docker-logging-deny -j DROP
+
+COMMIT
+# END UFW AND DOCKER
+```
+Final bit of Docker firewall preparation is to run
+```
+sudo ufw route allow proto tcp from any to any port 30000
+```
 Afterwards we enable the firewall and check the status.
 ```
 sudo ufw enable
 sudo ufw status
 ```
-
 Be careful and verify whether you can successfully open a new SSH connection before closing your existing session. Now after you ensured you didn't lock yourself out of your
 server we can continue with setting up the Radix node itself.
 
-Secondly, given Docker does not always abide by UFW rules, you will need to ensure your chosen hosting provider offers you a customisable firewall. Config will vary across different cloud providers. You will need to open the same tcp ports as you have opened on UFW. Config appropriately using support resources from your hosting provider if required. From personal experience, setup is very self-explanatory across DigitalOcean, Linode and Vultr. It is outside the scope of this guide to provide instructions for your particular hosting provider.
+## Linux kernal hardening
+One relatively easy way to DDoS a Radix node is a SYN flood attack, https://en.wikipedia.org/wiki/SYN_flood
+
+There are a few things we can change in the kernal to make our node more robust to these.
+
+```
+sudo nano /etc/sysctl.conf
+```
+In this file, find the `#net.ipv4.tcp_syncookies=1` row and remove the `#` from the beginning.
+At the bottom of the file, add these two rows:
+```
+net.ipv4.tcp_max_syn_backlog=16384
+net.ipv4.tcp_synack_retries=2
+```
+Finally to load these settings run:
+```
+sudo sysctl -p
+```
 
 ## Update System
 Update package repository and update system:
@@ -211,9 +297,9 @@ We install the Radix node using the CLI and the Docker Method: https://docs.radi
 
 
 ## Install the CLI tool
-Download the latest version of the CLI tool. You will need to replace LOCATION and the brackets below with the location of the 'radixnode-ubuntu-20.04' file marked as being the latest release here: https://github.com/radixdlt/node-runner/releases
+Download the latest version of the CLI tool. Check https://github.com/radixdlt/node-runner/releases, if there is a version > 1.0.4 you'll need to replace the link in the command to that version
 ```
-wget -O radixnode <LOCATION>
+wget -O radixnode https://github.com/radixdlt/node-runner/releases/download/1.0.4/radixnode-ubuntu-20.04
 ```
 Make this downloaded file executable:
 ```
@@ -239,7 +325,7 @@ But first you need to pick a seed. Choose one near to the location of your node 
 ```
 radixnode docker setup -n fullnode -t <ADDRESS & IP OF CHOSEN SEED>
 ```
-
+Assuming you don't already have a node-keystore.ks, you'll be asked to create one. Enter a password and save this somewhere. You'll be asked to configure a location for the RADIXDB, my suggestion is /home/radix/RADIXDB but anywhere that works for you is fine
 
 ## Set passwords
 Now it is time to set three passwords for the Nginx server. My suggestion is to choose 32 character passwords without symbols, and obviously they should be different for each password.
@@ -275,12 +361,92 @@ Finally all all those environment variables to your current session with
 ```
 source ~/.bashrc
 ```
+# Monitoring
+We are going to completely ignore the `radixnode monitoring setup` option, because we don't want to be running a webserver that is listening to the internet for connections.
+
+Create a Grafana Cloud account at Grafana.com, it's free and awesome.
+
+Go to https://<YourChosenIdName>.grafana.net/a/grafana-easystart-app/?selected=, click Linux server, then the Next button at the bottom.
+
+Don't change any settings, the default options are good. Copy the install script and run it. We'll now be pushing server health data to Grafana Cloud, but we need to do some config for node health data.
+ 
+Go into your default config file `sudo nano /etc/grafana-agent.yaml` and copy / paste it into a text editor.
+
+Delete the config file
+```
+sudo rm /etc/grafana-agent.yaml
+```
+Recreate the config file
+```
+sudo nano /etc/grafana-agent.yaml
+```
+Replace the entire contents of the file with this. Don't change any of the spacing. Replace the <x>,<y> and <z>'s with the values in your default config file. Add the metrics password you set into <NGINX METRICS PASSWORD>, and fill in the items in <> and remove the <> brackets from the final file
+```
+integrations:
+  node_exporter:
+    enabled: true
+  prometheus_remote_write:
+  - basic_auth:
+      password: <x>
+      username: <y>
+    url: https://prometheus-blocks-prod-us-central1.grafana.net/api/prom/push
+loki:
+  configs:
+  - clients:
+    - basic_auth:
+        password: <x>
+        username: <z>
+      url: https://logs-prod-us-central1.grafana.net/api/prom/push
+    name: integrations
+    positions:
+      filename: /tmp/positions.yaml
+    target_config:
+      sync_period: 10s
+prometheus:
+  configs:
+  -   name: integrations
+      scrape_configs:
+      - basic_auth:
+            password: <NGINX METRICS PASSWORD>
+            username: metrics
+        job_name: radix_fullnode
+        metrics_path: /metrics
+        scheme: https
+        static_configs:
+        -   labels:
+                network: <mainnet>
+                node: <radup1>
+                public_ip: <x.x.x.x>
+            targets:
+            - localhost
+        tls_config:
+            insecure_skip_verify: true
+      remote_write:
+      -   basic_auth:
+              password: <x>
+              username: <y>
+          url: https://prometheus-blocks-prod-us-central1.grafana.net/api/prom/push
+  global:
+    scrape_interval: 15s
+  wal_directory: /tmp/grafana-agent-wal
+server:
+  http_listen_port: 12345
+```
+Exit and save and restart Grafana Agent
+```
+sudo systemctl restart grafana-agent.service
+```
+Run this to check for error messages, hopefully it looks good.
+```
+sudo systemctl status grafana-agent.service
+```
 
 ## Bringing up the node for the first time
 You've actually already used this command when you first installed the node. Remember again to customise this command based on your choosen seed.
 ```
 radixnode docker setup -n fullnode -t <ADDRESS & IP OF CHOSEN SEED>
 ```
+Enter the password for the node-keystore.ks you set previously, and set the same RADIXDB location.
 
 All being well your node is now running and synchronising. Check by running
 ```
@@ -292,127 +458,50 @@ In the information that is returned you should see a result that includes the ad
 radixnode api health
 ```
 
-This returns the current status of the node. It should say "SYNCING" which means it is running and currently synchronising. It will eventually changed to "UP" after full syncronisation.
+This returns the current status of the node. It should say "SYNCING" which means it is running ok and currently synchronising. It will eventually changed to "UP" after full syncronisation but you don't need to wait for this to contiue with the steps.
+
+You can also check out our dashboard on Grafana Cloud. https://radup.grafana.net/d/RO9kC7Gnz/radix-node-dashboard-default?orgId=1&refresh=10s. The new node name (e.g. Mainnet-1 or whatever you have called it) will hopefully be an option you can select top left. As if by magic you should see some data in the dashboard. Might not be complete, but will be in a few minutes!
+
 
 ## Optimise the node
-COMING SOON
-
-## Failover
-COMING SOON
-
-# Monitoring
-I do not use the monitoring solution which is built into the CLI. The CLI monitoring solution is explained at https://docs.radixdlt.com/main/node/install-grafana-dashboard.html
-
-There is nothing wrong with this option, however my preference is not to run a webserver on the same server as my node. If this option is one you want to explore, just bear in mind you will also need to open port 3000 on both UFW and your hosting provider customisable firewall.
-
-If the CLI method works for you then stop here. Otherwise continue to read about how to integrate with Grafana Cloud.
-
-I can recommend watching this comprehensive introduction to Grafana Cloud https://grafana.com/go/webinar/intro-to-prometheus-and-grafana/.
-
-First, sign up for a Grafana Cloud free account and follow their quickstart introductions to install Grafana Agent on your node (via the automatic setup script). This basic setup is out of the scope of this guide. You can find the quickstart introductions to install the Grafana Agent under `Onboarding (lightning icon) / Walkthrough / Linux Server` and click on `Next: Configure Service`.
-
-The Grafana Agent is basically a stripped down Promotheus which is directly writing to Grafana Cloud instead of storing metrics locally (Grafana Agent behaves like having a built-in Promotheus). You should now have a working monitoring of your system load pushed to Grafana Cloud.
-
-However it won't be pushing your node data to Grafana Cloud by default so let's fix that
-
-## Extending Grafana Agent Config
-Add the `scrape_configs` configuration to `etc/grafana-agent.yaml`: 
+Run
 ```
-sudo nano /etc/grafana-agent.yaml
+sudo radixnode optimise-node
+sudo apt install ansible
 ```
+Logout and log back in again. Then re-run
 ```
-prometheus:
-configs:
-- name: integrations
-  scrape_configs:
-    - job_name: radix-mainnet-fullnode
-      static_configs:
-        - targets: ['localhost:3333']
-  remote_write:
-    - basic_auth:
-      password: secret
-      username: 123456
-      url: https://prometheus-blocks-prod-us-central1.grafana.net/api/prom/push
+sudo radixnode optimise-node
 ```
-
-The prefixes like `radix-mainnet` before `fullnode` or `validator` are arbitrary and can be used
-to have two dashboards (one for mainnet and one for stokenet) in the same Grafana Cloud account.
-
-Just set the template variable `job` to `radix-mainnet-validator` in your mainnet dashboard
-and `radix-stokenet-validator` in your stokenet dashboard.
-
-The switch-mode script replaces `fullnode` with `validator` and vice versa.
-Set `job_name` in the config above to e.g. `radix-mainnet-fullnode` if you are running in fullnode mode and
-`radix-mainnet-validator` if you are running as validator.
-
-And restart to activate the new settings:
-```
-sudo systemctl restart grafana-agent
-```
-
-## Radix Dashboard
-
-I adapted the official `Radix Node Dashboard`
-https://github.com/radixdlt/node-runner/blob/main/monitoring/grafana/provisioning/dashboards/sample-node-dashboard.json
-and modified it a bit for usage in Grafana Cloud (including specific job names for `radix-validator` and `radix-fullnode` for failover).
-You can get the `dashboard.json` from https://github.com/fpieper/fpstaking/blob/main/docs/config/dashboard.json.
-You only need to replace `<your grafana cloud name>` with your own cloud name
-(three times, since it seems the alerts have problems to process a datasource template variable).
-It is a good idea to replace the values and variables in your JSON and then import the JSON as dashboard into Grafana Cloud.
-
-## Alerts
-
-### Spike.sh for phone calls
-To get phone proper notifications via phone calls in case of Grafana Alerts I am using Spike.sh.
-It only costs 7$/month and is working great.
-How you can configure Spike.sh as `Notification Channel` is described here:
-https://docs.spike.sh/integrations-guideline/integrate-spike-with-grafana.
-Afterwards you can select `Spike.sh` in your alert configurations.
-
-### Grafana Alerts
-You can find the alerts by clicking on the panel title / Edit / Alert.
-
-I set an alert on the proposals made panel, which fires an alert if no proposal was made in the last 2 minutes. However, this needs a bit tuning for real world condition (worked fine in betanet conditions).
-
-You also need to set `Notifications` to `Spike.sh` (if you configured the `Notification Channel` above). Or any other notification channel if you prefer `PagerDuty` or `Telegram`.
-
-# More Hardening
-## SSH
-- https://serverfault.com/questions/275669/ssh-sshd-how-do-i-set-max-login-attempts  
-- Restrict access to the port:
-    - use a VPN
-    - only allow connections from a fix IP address
-      ```
-      sudo ufw allow from 1.2.3.4 to any port ssh
-      ```
-
-## Restrict Local Access (TTY1, etc)
-We can additionally restrict local access.
-However, this obviously leads results in that you won't be able to login without SSH in emergencies.
-(booting into recovery mode works with most virtual servers, but causes downtime).
-But since we have multiple backup servers this can be a fair trade-off.
-
-Uncomment or add in this file
-```
-sudo nano /etc/pam.d/login
-```
-the following line:
-```
-account required pam_access.so
-```
-
-Then uncomment or add in this file
-```
-sudo nano /etc/security/access.conf
-```
-the following line:
-```
--:ALL:ALL
-```
-
-For further details:
-- https://linuxconfig.org/how-to-restrict-users-access-on-a-linux-machine
-
+Answer Y to prompts, and 8G for the swap file
+ 
 # Useful commands
+Check node version:
+```
+radixnode api version
+```
+Check node health
+```
+radixnode api health
+```
+Get node info:
+```
+radixnode api account get-info
+```
+Register as a validator / change fees / names / URL etc
+```
+radixnode api account update-validator-config
+```
+Show validator node details:
+```
+radixnode api validation get-node-info
+```
+Check metrics:
+```
+curl -u metrics:<METRICS PASSWORD> -k "https://localhost/metrics"
+```
+Who has staked
+```
+radixnode api validation get-node-info
+```
 
-COMING SOON
