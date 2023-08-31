@@ -1,0 +1,134 @@
+#!/bin/bash
+
+version=${1:-latest}
+HOST="http://localhost:3333"
+
+VALIDATOR_ADDRESS=$(curl -s -X POST "$HOST/key/list" -H "Content-Type: application/json" \
+                    -d '{"network_identifier": {"network": "mainnet"}}' \
+                    | jq -r ".public_keys[0].identifiers.validator_entity_identifier.address")
+IS_VALIDATING=$(curl -s -X POST "$HOST/entity" -H "Content-Type: application/json" \
+                -d "{\"network_identifier\": {\"network\": \"mainnet\"}, \"entity_identifier\":
+                    {\"address\": \"$VALIDATOR_ADDRESS\", \"sub_entity\": {\"address\": \"system\"}}}" \
+                | jq ".data_objects | any(.type == \"ValidatorBFTData\")")
+
+get_completed_proposals () {
+   curl -s -X POST "$HOST/entity" -H "Content-Type: application/json" \
+   -d "{\"network_identifier\": {\"network\": \"mainnet\"}, \"entity_identifier\":
+      {\"address\": \"$VALIDATOR_ADDRESS\", \"sub_entity\": {\"address\": \"system\"}}}" \
+    | jq ".data_objects[] | select(.type == \"ValidatorBFTData\") | .proposals_completed"
+}
+
+cd /opt/radixdlt || exit
+
+echo "Checking for latest radix node-runner version ..."
+NODE_RUNNER_URL=$(curl -s https://api.github.com/repos/radixdlt/node-runner/releases/latest | \
+           jq -r '.assets[] | select(.browser_download_url|split("/")|last|test("^radixnode-ubuntu-20.04")) | .browser_download_url')
+echo "Found node-runner url:" "$NODE_RUNNER_URL"
+NODE_RUNNER_FILE="$(basename "$NODE_RUNNER_URL")-$(echo "$NODE_RUNNER_URL" | awk -F/ '{print $(NF-1)}')"
+echo "Latest node-runner version: " "$NODE_RUNNER_FILE"
+
+if [[ ! -f $NODE_RUNNER_FILE ]]
+then
+    echo "Downloading new node-runner version ..."
+    curl -Lo "$NODE_RUNNER_FILE" "$NODE_RUNNER_URL" && \
+    chmod +x "$NODE_RUNNER_FILE" && \
+    rm -f "radixnode" && \
+    ln -s "/opt/radixdlt/$NODE_RUNNER_FILE" radixnode
+else
+    echo "Radix node-runner already up to date."
+fi
+
+cd /opt/radixdlt/releases || exit
+
+echo "Checking for requested (or latest) radix node version ..."
+if [ "$version" == "latest" ]; then
+    NODE_URL=$(curl -s "https://api.github.com/repos/radixdlt/radixdlt/releases/latest" | \
+       jq -r '.assets[] | select(.browser_download_url|split("/")|last|endswith(".zip")) | .browser_download_url')
+else
+    NODE_URL=$(curl -s "https://api.github.com/repos/radixdlt/radixdlt/releases/tags/$version" | \
+       jq -r --arg version "$version" '.assets[] | select(.browser_download_url|split("/")|last|test("radixdlt-dist-" + $version + "\\.zip$")) | .browser_download_url')
+fi
+
+echo "Found radix node url:" "$NODE_URL"
+NODE_ARCHIVE=$(basename "$NODE_URL")
+
+echo "Latest node version:" "$NODE_ARCHIVE"
+
+if [[ ! -f $NODE_ARCHIVE ]]
+then
+    echo "Downloading new node version ..."
+    curl -OL "$NODE_URL" && \
+    unzip "$NODE_ARCHIVE"
+fi
+
+NODE_EXTRACTED=$(unzip -Z1 "$NODE_ARCHIVE" | head -n 1)
+if [[ ${#NODE_EXTRACTED} == 0 ]]
+then
+    echo "Error: Failed to read downloaded archive."
+    exit
+fi
+
+if [[ $(find "$NODE_EXTRACTED" -type f | wc -l) == 0 ]]
+then
+    echo "Error: no files extracted."
+    exit
+fi
+
+DIR_BIN=/opt/radixdlt/releases/${NODE_EXTRACTED}bin
+DIR_LIB=/opt/radixdlt/releases/${NODE_EXTRACTED}lib
+
+if [[ $DIR_BIN = $(readlink /etc/radixdlt/node/bin) && \
+      $DIR_LIB = $(readlink /etc/radixdlt/node/lib) && \
+      "$1" != "force" ]]
+then
+    echo "Radix node already up to date."
+    exit
+fi
+
+mkdir -p /etc/radixdlt/node
+
+echo "Installing new node version" "$NODE_ARCHIVE" "..."
+
+## INSTALL - node not running
+
+if [[ $VALIDATOR_ADDRESS == "" ]]
+then
+    if
+        rm -f /etc/radixdlt/node/bin && \
+        rm -f /etc/radixdlt/node/lib && \
+        ln -s "$DIR_BIN" /etc/radixdlt/node/bin && \
+        ln -s "$DIR_LIB" /etc/radixdlt/node/lib
+    then
+        echo "Successfully installed node files."
+    else
+        echo "Error: Failed to install node files."
+    fi
+    exit
+fi
+
+## UPDATE
+
+if [[ $IS_VALIDATING == true ]]
+then
+  PROPOSALS_COMPLETED=$(get_completed_proposals)
+  echo "Wait until node completed proposal to minimise risk of a missed proposal ..."
+  while (( $(get_completed_proposals) == PROPOSALS_COMPLETED)) || (( $(get_completed_proposals) == 0))
+  do
+      echo "Waiting ..."
+      sleep 1
+  done
+  echo "Validator completed proposal - updating now."
+fi
+
+if
+    sudo systemctl stop radixdlt-node && \
+    rm -f /etc/radixdlt/node/bin && \
+    rm -f /etc/radixdlt/node/lib && \
+    ln -s "$DIR_BIN" /etc/radixdlt/node/bin && \
+    ln -s "$DIR_LIB" /etc/radixdlt/node/lib && \
+    sudo systemctl start radixdlt-node
+then
+    echo "Successfully installed node and restarted."
+else
+    echo "Error: Failed to install and restart node."
+fi
